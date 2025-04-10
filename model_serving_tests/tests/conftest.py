@@ -211,3 +211,69 @@ def run_static_command():
             LOGGER.debug(f"Exception occurred: {e}")
 
 
+from model_serving_tests.model_config.runtimes.vLLM.inference_service_config import create_vllm_raw_inference_service
+
+@pytest.fixture
+def http_s3_vllm_raw_inference_service(
+    s3_models_storage_uri,
+    model_namespace,
+    kserve_runtime_image,
+    valid_aws_config,
+):
+    """Fixture for raw ISVC creation using vLLM runtime and HTTPS"""
+    return create_vllm_raw_inference_service(
+        model_uri=s3_models_storage_uri["model-dir"],
+        namespace=model_namespace["name"],
+        runtime="vllm-runtime",
+        protocol="https",
+        runtime_image=kserve_runtime_image,
+        annotations={"serving.kserve.io/enable-auth": "true"},
+    )
+
+
+from ocp_resources.resource import ResourceEditor
+from utilities.constants import Annotations
+
+@pytest.fixture
+def patched_remove_vllm_authentication_isvc(http_s3_vllm_raw_inference_service):
+    """Patch ISVC to disable authentication (set annotation to false)"""
+    isvc = http_s3_vllm_raw_inference_service
+
+    ResourceEditor(
+        patches={
+            isvc: {
+                "metadata": {
+                    "annotations": {
+                        Annotations.KserveAuth.SECURITY: "false",
+                    }
+                }
+            }
+        }
+    ).update()
+
+    return isvc
+
+import requests
+
+def get_route_token(route_url: str, verify_tls: bool = False) -> str:
+    """
+    Fetch a bearer token by querying a secured endpoint
+    """
+    try:
+        response = requests.get(route_url, verify=verify_tls)
+        response.raise_for_status()
+        return response.json().get("token", "")  # Adjust key based on API response
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Failed to get token from {route_url}: {e}")
+
+
+import pytest
+from utilities.infra import get_route_token
+
+@pytest.fixture
+def http_raw_inference_token(http_s3_vllm_raw_inference_service):
+    """Get token for querying raw HTTPS service"""
+    return get_route_token(
+        route_url=http_s3_vllm_raw_inference_service.status.url,
+        verify_tls=False,  # Or True if certs are valid
+    )
