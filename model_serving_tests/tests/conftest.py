@@ -13,6 +13,7 @@ from ocp_resources.secret import Secret
 from ocp_resources.service_account import ServiceAccount
 import logging
 from model_serving_tests.tests.constant import INFERE_DIR, RUNTIME_DIR, STORAGE_DIR
+from _pytest.config import Config
 
 logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger(__name__)
