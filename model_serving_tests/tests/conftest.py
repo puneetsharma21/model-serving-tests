@@ -253,19 +253,6 @@ def patched_remove_vllm_authentication_isvc(http_s3_vllm_raw_inference_service):
 
     return isvc
 
-import requests
-
-def get_route_token(route_url: str, verify_tls: bool = False) -> str:
-    """
-    Fetch a bearer token by querying a secured endpoint
-    """
-    try:
-        response = requests.get(route_url, verify=verify_tls)
-        response.raise_for_status()
-        return response.json().get("token", "")  # Adjust key based on API response
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Failed to get token from {route_url}: {e}")
-
 
 import pytest
 from utilities.infra import get_route_token
@@ -277,3 +264,30 @@ def http_raw_inference_token(http_s3_vllm_raw_inference_service):
         route_url=http_s3_vllm_raw_inference_service.status.url,
         verify_tls=False,  # Or True if certs are valid
     )
+
+@pytest.fixture(scope="session")
+def aws_access_key_id(pytestconfig: Config) -> str:
+    access_key = pytestconfig.option.aws_access_key_id
+    if not access_key:
+        raise ValueError(
+            "AWS access key id is not set. "
+            "Either pass with `--aws-access-key-id` or set `AWS_ACCESS_KEY_ID` environment variable"
+        )
+    return access_key
+
+
+@pytest.fixture(scope="session")
+def aws_secret_access_key(pytestconfig: Config) -> str:
+    secret_access_key = pytestconfig.option.aws_secret_access_key
+    if not secret_access_key:
+        raise ValueError(
+            "AWS secret access key is not set. "
+            "Either pass with `--aws-secret-access-key` or set `AWS_SECRET_ACCESS_KEY` environment variable"
+        )
+    return secret_access_key
+
+
+@pytest.fixture(scope="session")
+def valid_aws_config(aws_access_key_id: str, aws_secret_access_key: str) -> tuple[str, str]:
+    return aws_access_key_id, aws_secret_access_key
+
