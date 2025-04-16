@@ -265,6 +265,21 @@ def http_raw_inference_token(http_s3_vllm_raw_inference_service):
         verify_tls=False,  # Or True if certs are valid
     )
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--aws-access-key-id",
+        action="store",
+        default=os.getenv("AWS_ACCESS_KEY_ID"),
+        help="AWS Access Key ID (or set AWS_ACCESS_KEY_ID env var)",
+    )
+    parser.addoption(
+        "--aws-secret-access-key",
+        action="store",
+        default=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        help="AWS Secret Access Key (or set AWS_SECRET_ACCESS_KEY env var)",
+    )
+
+
 @pytest.fixture(scope="session")
 def aws_access_key_id(pytestconfig: Config) -> str:
     access_key = pytestconfig.option.aws_access_key_id
