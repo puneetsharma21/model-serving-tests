@@ -4,6 +4,7 @@ import signal
 import os
 import pytest
 from syrupy.extensions.json import JSONSnapshotExtension
+from typing import Any, Callable, Generator
 from ocp_resources.serving_runtime import ServingRuntime
 from ocp_resources.inference_service import InferenceService
 from kubernetes.dynamic import DynamicClient
@@ -13,6 +14,9 @@ from ocp_resources.secret import Secret
 from ocp_resources.service_account import ServiceAccount
 import logging
 from model_serving_tests.tests.constant import INFERE_DIR, RUNTIME_DIR, STORAGE_DIR
+from _pytest.config import Config
+from _pytest.fixtures import FixtureRequest
+from utilities.infra import create_ns
 
 logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger(__name__)
@@ -48,7 +52,69 @@ def pytest_addoption(parser):
         default= "serving_runtime",
         help="Specify the runtime file name"
     )
+    parser.addoption(
+        "--aws-access-key-id",
+        action="store",
+        default=os.getenv("AWS_ACCESS_KEY_ID"),
+        help="AWS Access Key ID (or set AWS_ACCESS_KEY_ID env var)",
+    )
+    parser.addoption(
+        "--aws-secret-access-key",
+        action="store",
+        default=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        help="AWS Secret Access Key (or set AWS_SECRET_ACCESS_KEY env var)",
+    )
+    parser.addoption(
+        "--models-s3-bucket-name",
+        action="store",
+        default=None,
+        help="S3 bucket name where models are stored"
+    )
 
+@pytest.fixture(scope="class")
+def model_namespace(request: FixtureRequest, admin_client: DynamicClient) -> Generator[Namespace, Any, Any]:
+    if request.param.get("modelmesh-enabled"):
+        request.getfixturevalue(argname="enabled_modelmesh_in_dsc")
+
+    with create_ns(admin_client=admin_client, pytest_request=request) as ns:
+        yield ns
+
+@pytest.fixture(scope="session")
+def aws_access_key_id(pytestconfig: Config) -> str:
+    access_key = pytestconfig.option.aws_access_key_id
+    if not access_key:
+        raise ValueError(
+            "AWS access key id is not set. "
+            "Either pass with `--aws-access-key-id` or set `AWS_ACCESS_KEY_ID` environment variable"
+        )
+    return access_key
+
+
+@pytest.fixture(scope="session")
+def aws_secret_access_key(pytestconfig: Config) -> str:
+    secret_access_key = pytestconfig.option.aws_secret_access_key
+    if not secret_access_key:
+        raise ValueError(
+            "AWS secret access key is not set. "
+            "Either pass with `--aws-secret-access-key` or set `AWS_SECRET_ACCESS_KEY` environment variable"
+        )
+    return secret_access_key
+
+
+@pytest.fixture(scope="session")
+def valid_aws_config(aws_access_key_id: str, aws_secret_access_key: str) -> tuple[str, str]:
+    return aws_access_key_id, aws_secret_access_key
+
+
+@pytest.fixture(scope="session")
+def models_s3_bucket_name(pytestconfig: pytest.Config) -> str:
+    models_bucket = pytestconfig.getoption("models_s3_bucket_name")
+    if not models_bucket:
+        raise ValueError(
+            "Bucket name for the models bucket is not defined."
+            "Either pass with `--models-s3-bucket-name` or set `MODELS_S3_BUCKET_NAME` environment variable"
+        )
+    return models_bucket
 
 @pytest.fixture(scope="session")
 def runtime_image(request):
@@ -78,6 +144,10 @@ def runtime_name(request):
 def client() -> DynamicClient:
     yield get_client()
 
+
+@pytest.fixture
+def s3_models_storage_uri(request: FixtureRequest, models_s3_bucket_name: str) -> str:
+    return f"s3://{models_s3_bucket_name}/{request.param['model-dir']}/"
 
 @pytest.fixture
 def create_namespace(client: DynamicClient):
@@ -209,5 +279,60 @@ def run_static_command():
             process.wait()  # Ensure it has terminated
         except Exception as e:
             LOGGER.debug(f"Exception occurred: {e}")
+
+
+from model_serving_tests.model_config.runtimes.vLLM.inference_service_config import create_vllm_raw_inference_service
+
+@pytest.fixture
+def http_s3_vllm_raw_inference_service(
+    s3_models_storage_uri,
+    model_namespace,
+    kserve_runtime_image,
+    valid_aws_config,
+):
+    """Fixture for raw ISVC creation using vLLM runtime and HTTPS"""
+    return create_vllm_raw_inference_service(
+        model_uri=s3_models_storage_uri["model-dir"],
+        namespace=model_namespace["name"],
+        runtime="vllm-runtime",
+        protocol="https",
+        runtime_image=kserve_runtime_image,
+        annotations={"serving.kserve.io/enable-auth": "true"},
+    )
+
+
+from ocp_resources.resource import ResourceEditor
+from utilities.constants import Annotations
+
+@pytest.fixture
+def patched_remove_vllm_authentication_isvc(http_s3_vllm_raw_inference_service):
+    """Patch ISVC to disable authentication (set annotation to false)"""
+    isvc = http_s3_vllm_raw_inference_service
+
+    ResourceEditor(
+        patches={
+            isvc: {
+                "metadata": {
+                    "annotations": {
+                        Annotations.KserveAuth.SECURITY: "false",
+                    }
+                }
+            }
+        }
+    ).update()
+
+    return isvc
+
+
+import pytest
+from utilities.infra import get_route_token
+
+@pytest.fixture
+def http_raw_inference_token(http_s3_vllm_raw_inference_service):
+    """Get token for querying raw HTTPS service"""
+    return get_route_token(
+        route_url=http_s3_vllm_raw_inference_service.status.url,
+        verify_tls=False,  # Or True if certs are valid
+    )
 
 
